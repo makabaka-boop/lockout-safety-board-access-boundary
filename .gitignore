@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+*.log
+.env
+.pg-data
+test/pg-data

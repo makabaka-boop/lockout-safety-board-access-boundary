@@ -1,0 +1,43 @@
+{
+  "name": "loto-isolation-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "全栈检修隔离牌板：React + Fastify + PostgreSQL，双 API 实例共享裁决，单调修订号乐观并发控制",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "tsx watch src/server/server.ts",
+    "build": "vite build",
+    "start": "node node_modules/tsx/dist/cli.mjs src/server/server.ts",
+    "migrate": "tsx src/server/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^4.29.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.0.1",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^20.16.11",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "embedded-postgres": "18.4.0-beta.17",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.9",
+    "vitest": "^2.1.5"
+  }
+}

@@ -1,0 +1,69 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loto
+      POSTGRES_PASSWORD: loto
+      POSTGRES_DB: loto
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U loto -d loto']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 一次性服务：迁移 + 播种 + 验收检查；成功后退出
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ['node', 'node_modules/tsx/dist/cli.mjs', 'src/server/verify.ts']
+    environment:
+      DATABASE_URL: postgres://loto:loto@db:5432/loto
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+
+  api-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://loto:loto@db:5432/loto
+      PORT: '4101'
+      JWT_SECRET: ${JWT_SECRET:-please-change-me}
+    depends_on:
+      db:
+        condition: service_healthy
+      verify:
+        condition: service_completed_successfully
+
+  api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://loto:loto@db:5432/loto
+      PORT: '4101'
+      JWT_SECRET: ${JWT_SECRET:-please-change-me}
+    depends_on:
+      db:
+        condition: service_healthy
+      verify:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      # 页面以 WEB_PORT 发布到宿主机（默认 8080）
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      - api-1
+      - api-2
+
+volumes:
+  pgdata:
