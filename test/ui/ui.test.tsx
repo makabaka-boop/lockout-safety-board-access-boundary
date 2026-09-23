@@ -12,6 +12,7 @@ import {
   CREDS,
 } from '../harness.js'
 import { tokenStore } from '../../src/web/api.js'
+import { TicketBoard } from '../../src/web/components/TicketBoard.js'
 
 const AppModule = await import('../../src/web/App.js')
 const App = AppModule.App
@@ -299,5 +300,133 @@ describe('界面：过期请求自动重载最新牌板', () => {
       .catch((e) => e)
     expect(err.status).toBe(409)
     expect(err.body.error.snapshot.blockers).toEqual(['terminal'])
+  })
+})
+
+describe('界面：授权边界与快照不泄露、不渲染、不缓存', () => {
+  // 用只有授权者才会见到的敏感字符串做“页面可见项”探针
+  const SECRET_DEVICE = '涉密机组-7741'
+  const SECRET_POINT = '涉密隔离点-断总闸'
+  const SECRET_WORKER = '检修·张师傅'
+
+  function loginWith(username: string, password: string) {
+    fireEvent.change(screen.getByTestId('login-username'), {
+      target: { value: username },
+    })
+    fireEvent.change(screen.getByTestId('login-password'), {
+      target: { value: password },
+    })
+    fireEvent.click(screen.getByTestId('login-submit'))
+  }
+
+  it('未授权检修人员的列表不出现该票，设备名等可见项一律不渲染', async () => {
+    const coord = await clientFor(4171, CREDS.coord)
+    await coord.post('/api/tickets', {
+      device: SECRET_DEVICE,
+      points: [SECRET_POINT],
+      personnel: ['zhang'],
+    })
+
+    renderApp()
+    loginWith('wang', 'worker123')
+    // 列表加载完成（出现空态文案）
+    await waitFor(() => expect(screen.getByText(/暂无作业票/)).toBeTruthy())
+
+    expect(screen.queryByText(SECRET_DEVICE)).toBeNull()
+    expect(screen.queryByText(SECRET_POINT)).toBeNull()
+    expect(screen.queryByText(SECRET_WORKER)).toBeNull()
+    // 列表里根本没有票卡片，无法点开
+    expect(document.querySelector('[data-testid^="ticket-card-"]')).toBeNull()
+  })
+
+  it('未授权账号直达牌板只显示无数据的越权提示，任何时刻都不短暂渲染快照', async () => {
+    const coord = await clientFor(4171, CREDS.coord)
+    const created = await coord.post<{ snapshot: any }>('/api/tickets', {
+      device: SECRET_DEVICE,
+      points: [SECRET_POINT],
+      personnel: ['zhang'],
+    })
+    const ticketId = created.snapshot.ticket.id
+
+    const wang = await clientFor(4171, CREDS.wang)
+    tokenStore.set(wang.token)
+
+    // 请求发出前：敏感串不存在（避免“短暂渲染”）
+    const { unmount } = render(
+      React.createElement(TicketBoard, {
+        ticketId,
+        user: wang.user,
+        onBack: () => {},
+      }),
+    )
+    expect(screen.queryByText(SECRET_DEVICE)).toBeNull()
+    expect(screen.queryByText(SECRET_POINT)).toBeNull()
+
+    // 403 落地后：只显示越权提示与返回按钮，快照字段依旧完全不可见
+    await waitFor(() => expect(screen.getByTestId('board-notice')).toBeTruthy())
+    expect(screen.getByTestId('board-notice').textContent).toContain('未被授权')
+    expect(screen.queryByText(SECRET_DEVICE)).toBeNull()
+    expect(screen.queryByText(SECRET_POINT)).toBeNull()
+    expect(screen.queryByText(SECRET_WORKER)).toBeNull()
+    expect(screen.queryByTestId('revision')).toBeNull()
+    expect(screen.queryByTestId('lock-list')).toBeNull()
+    expect(screen.queryByTestId('confirm-1')).toBeNull()
+    unmount()
+  })
+
+  it('列表与越权写响应都带 no-store，牌板快照不会进入缓存', async () => {
+    const coord = await clientFor(4171, CREDS.coord)
+    const created = await coord.post<{ snapshot: any }>('/api/tickets', {
+      device: SECRET_DEVICE,
+      points: [SECRET_POINT],
+      personnel: ['zhang'],
+    })
+    const wang = await clientFor(4171, CREDS.wang)
+
+    const listRes = await fetch('/api/tickets', {
+      headers: { Authorization: `Bearer ${wang.token}` },
+    })
+    expect(listRes.headers.get('cache-control')).toBe('no-store')
+
+    const deniedRes = await fetch(
+      `/api/tickets/${created.snapshot.ticket.id}/locks`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${wang.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ revision: 1 }),
+      },
+    )
+    expect(deniedRes.status).toBe(403)
+    expect(deniedRes.headers.get('cache-control')).toBe('no-store')
+    const body = await deniedRes.json()
+    expect(body.error.snapshot).toBeUndefined()
+  })
+
+  it('授权检修人员仍能在列表与牌板看到自己被授权的票（合法流程回归）', async () => {
+    const coord = await clientFor(4171, CREDS.coord)
+    const created = await coord.post<{ snapshot: any }>('/api/tickets', {
+      device: SECRET_DEVICE,
+      points: [SECRET_POINT],
+      personnel: ['zhang'],
+    })
+    const ticketId = created.snapshot.ticket.id
+
+    renderApp()
+    loginWith('zhang', 'worker123')
+    await waitFor(() =>
+      expect(screen.getByTestId(`ticket-card-${ticketId}`)).toBeTruthy(),
+    )
+    expect(screen.getByTestId(`ticket-card-${ticketId}`).textContent).toContain(
+      SECRET_DEVICE,
+    )
+    fireEvent.click(screen.getByTestId(`ticket-card-${ticketId}`))
+    await waitFor(() => expect(screen.getByText(SECRET_POINT)).toBeTruthy())
+    expect(screen.getByTestId('revision').textContent).toContain('修订号 1')
+    // 授权工人可见确认/挂锁操作
+    expect(screen.getByTestId(`confirm-${created.snapshot.points[0].id}`)).toBeTruthy()
+    expect(screen.getByTestId('place-lock')).toBeTruthy()
   })
 })

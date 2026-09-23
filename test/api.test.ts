@@ -137,10 +137,14 @@ describe('授权与隔离点确认', () => {
       .catch((e) => e as HttpError)
     expect(err.status).toBe(403)
     expect(err.body.error.code).toBe('FORBIDDEN')
-    // 失败保留当前牌板：点仍未确认、revision 仍为 1
-    const cur = await wang.get<{ snapshot: any }>(
-      `/api/tickets/${s.ticket.id}`,
-    )
+    // 越权错误体不得夹带任何牌板数据（无快照/修订号/阻断项）
+    expect(err.body.error.snapshot).toBeUndefined()
+    expect(err.body.error.latestRevision).toBeUndefined()
+    expect(err.body.error.blockers).toBeUndefined()
+    // 失败保留当前牌板：点仍未确认、revision 仍为 1（用授权账号核验）
+    const cur = await (
+      await clientFor(PORT_A, CREDS.zhang)
+    ).get<{ snapshot: any }>(`/api/tickets/${s.ticket.id}`)
     expect(cur.snapshot.points[0].confirmed_by).toBeNull()
     expect(cur.snapshot.ticket.revision).toBe(1)
 

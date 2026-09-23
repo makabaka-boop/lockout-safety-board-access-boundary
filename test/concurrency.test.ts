@@ -172,16 +172,23 @@ describe('撤最后一锁 × 复位 双实例交错', () => {
         expect(remove.ok).toBe(false)
         await assertLoserAgreesWithDb(remove, ticketId)
       } else {
-        // 复位失败 ⇒ 撤锁成功，票仍在检修，败方必须看见"无锁可送?" —— 不，
-        // 撤锁已提交所以库中无锁；败方失败的原因是修订号过期（remove 先提交），
-        // 其快照显示 maintenance + 0 锁 + 已全部确认。
+        // 复位失败 ⇒ 撤锁成功，票仍在检修，库中无锁。
         expect(remove.ok).toBe(true)
         expect(db.status).toBe('maintenance')
         expect(db.locks).toBe(0)
-        expect(reset.snapshot!.ticket.revision).toBe(db.revision)
-        expect(reset.snapshot!.ticket.status).toBe('maintenance')
-        expect(reset.snapshot!.locks).toHaveLength(0)
-        expect(reset.code).toBe('CONFLICT') // 旧页面：revision 过期
+        expect(reset.code).toBe('CONFLICT') // 旧页面：revision 过期或裁决时仍有锁
+        // 败方快照必须与其“裁决时刻”的数据库一致，两种合法串行序都要接受：
+        if (reset.snapshot!.ticket.revision === db.revision) {
+          // (a) 撤锁先提交：复位在锁释放后被裁决，读到的是撤锁后的最新牌板
+          expect(reset.snapshot!.ticket.status).toBe('maintenance')
+          expect(reset.snapshot!.locks).toHaveLength(0)
+        } else {
+          // (b) 复位先被裁决：撤锁尚未提交，当时那把锁还在，阻断项必须是 locks:1
+          expect(reset.snapshot!.ticket.revision).toBe(revision)
+          expect(reset.snapshot!.ticket.status).toBe('maintenance')
+          expect(reset.snapshot!.locks).toHaveLength(1)
+          expect(reset.blockers ?? reset.snapshot!.blockers).toContain('locks:1')
+        }
         // 败方用"最新快照 + 新修订号"重试复位应当成功（且仅一次）
         const leadB2 = await clientFor(PORT_B, CREDS.lead)
         const retry = await leadB2.post<{ snapshot: Snapshot }>(

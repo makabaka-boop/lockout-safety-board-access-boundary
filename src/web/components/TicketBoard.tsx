@@ -27,7 +27,13 @@ export function TicketBoard({
         <button className="secondary" onClick={onBack}>
           ← 返回列表
         </button>
-        <p className="muted">加载牌板中…</p>
+        {notice ? (
+          <div className="banner error" data-testid="board-notice">
+            {notice.text}
+          </div>
+        ) : (
+          <p className="muted">加载牌板中…</p>
+        )}
       </div>
     )
   }

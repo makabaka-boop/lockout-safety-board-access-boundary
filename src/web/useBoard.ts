@@ -12,7 +12,8 @@ export interface BoardNotice {
  * - 任何写操作都携带当前页面所见 revision（snapshot.ticket.revision）。
  * - 409 CONFLICT：页面过期/并发失败，失败操作不入库；立即用服务端返回的
  *   最新快照刷新牌板，避免后续请求继续携带过期修订号。
- * - 403 FORBIDDEN：提示越权，不改变牌板。
+ * - 403 FORBIDDEN 等其它失败：只显示提示，绝不把错误体里可能夹带的快照
+ *   应用到页面状态——未授权响应不允许被渲染或缓存进 seenRevision。
  */
 export function useBoard(ticketId: number, onChanged?: (s: Snapshot) => void) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -62,22 +63,18 @@ export function useBoard(ticketId: number, onChanged?: (s: Snapshot) => void) {
         applySnapshot(snapshot)
         setNotice({ kind: 'success', text: '操作已提交' })
       } catch (err) {
-        if (err instanceof ApiError && err.snapshot) {
-          if (err.code === 'CONFLICT') {
-            const latestSnapshot = err.snapshot
-            const blockers = err.blockers ?? latestSnapshot.blockers
-            applySnapshot(latestSnapshot)
-            setNotice({
-              kind: 'conflict',
-              text:
-                blockers.length > 0 && blockers.join('') !== ''
-                  ? `页面已过期（最新阻断项：${describeBlockers(blockers)}，最新修订号 ${latestSnapshot.ticket.revision}）`
-                  : `页面已过期（最新修订号 ${latestSnapshot.ticket.revision}）`,
-            })
-          } else {
-            applySnapshot(err.snapshot)
-            setNotice({ kind: 'forbidden', text: err.message })
-          }
+        if (err instanceof ApiError && err.code === 'CONFLICT' && err.snapshot) {
+          // 仅并发冲突允许用响应内快照重载牌板（服务端只会给已授权者下发）
+          const latestSnapshot = err.snapshot
+          const blockers = err.blockers ?? latestSnapshot.blockers
+          applySnapshot(latestSnapshot)
+          setNotice({
+            kind: 'conflict',
+            text:
+              blockers.length > 0 && blockers.join('') !== ''
+                ? `页面已过期（最新阻断项：${describeBlockers(blockers)}，最新修订号 ${latestSnapshot.ticket.revision}）`
+                : `页面已过期（最新修订号 ${latestSnapshot.ticket.revision}）`,
+          })
         } else if (err instanceof ApiError) {
           setNotice({
             kind: err.code === 'FORBIDDEN' ? 'forbidden' : 'error',

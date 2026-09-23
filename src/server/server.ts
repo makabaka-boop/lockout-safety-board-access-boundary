@@ -106,6 +106,14 @@ export async function buildServer(): Promise<ServerHandle> {
   })
 
   // ------------------------------------------------------------- 认证
+  // 牌板快照含设备/人员/锁等敏感业务数据：所有 API 响应禁止缓存，
+  // 避免浏览器或中间代理留存后泄露给登出后的使用者。
+  app.addHook('onSend', async (req, reply) => {
+    if (req.url.startsWith('/api/')) {
+      reply.header('Cache-Control', 'no-store')
+    }
+  })
+
   app.post('/api/login', async (req, reply) => {
     const body = (req.body ?? {}) as { username?: string; password?: string }
     if (!body.username || !body.password) {
@@ -125,9 +133,10 @@ export async function buildServer(): Promise<ServerHandle> {
     reply.status(200).send({ user: rows[0] })
   })
 
-  // 列出可选的检修人员（协调员建票时使用）
+  // 列出可选的检修人员（仅协调员建票时需要；检修/送电人员无权拉取人员目录）
   app.get('/api/workers', async (req, reply) => {
-    authenticate(req, reply)
+    const principal = authenticate(req, reply)
+    requireRole(principal, ['coordinator'])
     const { rows } = await db.query(
       `SELECT id, username, display_name FROM users WHERE role = 'worker' ORDER BY id`,
     )
@@ -135,19 +144,21 @@ export async function buildServer(): Promise<ServerHandle> {
   })
 
   // ------------------------------------------------------------- 票读取
+  // 列表按角色过滤：检修人员仅见自己被授权的票
   app.get('/api/tickets', async (req, reply) => {
-    authenticate(req, reply)
-    const tickets = await listTickets(db)
+    const principal = authenticate(req, reply)
+    const tickets = await listTickets(db, principal)
     reply.status(200).send({ tickets })
   })
 
+  // 详情按票级授权裁决：未授权检修人员拿到的是无业务数据的 403
   app.get<{ Params: { id: string } }>(
     '/api/tickets/:id',
     async (req, reply) => {
-      authenticate(req, reply)
+      const principal = authenticate(req, reply)
       const id = Number(req.params.id)
       if (!Number.isInteger(id)) throw new BoardError('VALIDATION', '票号无效')
-      const snapshot = await getSnapshot(db, id)
+      const snapshot = await getSnapshot(db, id, principal)
       reply.status(200).send({ snapshot })
     },
   )

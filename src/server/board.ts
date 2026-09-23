@@ -44,6 +44,27 @@ export class BoardError extends Error {
 
 // ---------------------------------------------------------------- 读取
 
+/**
+ * 票级可见性：协调员与送电负责人可查看全部票（各自职责所需）；
+ * 检修人员仅可查看授权名单包含自己的票。
+ * 越权时抛出不含任何业务数据的 FORBIDDEN（不附快照/修订号/阻断项），
+ * 调用方不得把该错误与快照一起返回。
+ */
+async function assertTicketVisible(
+  client: DbClient,
+  viewer: Actor,
+  ticketId: number,
+): Promise<void> {
+  if (viewer.role !== 'worker') return
+  const { rows } = await client.query(
+    `SELECT 1 FROM authorizations WHERE ticket_id = $1 AND username = $2`,
+    [ticketId, viewer.username],
+  )
+  if (rows.length === 0) {
+    throw new BoardError('FORBIDDEN', '你未被授权查看该作业票')
+  }
+}
+
 interface TicketRow {
   id: number
   device: string
@@ -118,13 +139,32 @@ async function readSnapshot(
 export async function getSnapshot(
   db: Pool,
   ticketId: number,
+  viewer: Actor,
 ): Promise<Snapshot> {
   const row = await readTicket(db, ticketId)
   if (!row) throw new BoardError('NOT_FOUND', '作业票不存在')
+  await assertTicketVisible(db, viewer, ticketId)
   return readSnapshot(db, row)
 }
 
-export async function listTickets(db: Pool = defaultPool): Promise<Snapshot[]> {
+/**
+ * 票列表：协调员 / 送电负责人可见全部票；
+ * 检修人员只返回授权名单包含自己的票（其余票的存在与详情一律不下发）。
+ */
+export async function listTickets(
+  db: Pool = defaultPool,
+  viewer?: Actor,
+): Promise<Snapshot[]> {
+  if (viewer && viewer.role === 'worker') {
+    const { rows } = await db.query<TicketRow>(
+      `SELECT t.id, t.device, t.status, t.coordinator, t.revision, t.created_at, t.updated_at
+       FROM tickets t
+       JOIN authorizations a ON a.ticket_id = t.id AND a.username = $1
+       ORDER BY t.id DESC`,
+      [viewer.username],
+    )
+    return Promise.all(rows.map((r) => readSnapshot(db, r)))
+  }
   const { rows } = await db.query<TicketRow>(
     `SELECT id, device, status, coordinator, revision, created_at, updated_at
      FROM tickets ORDER BY id DESC`,
@@ -152,8 +192,9 @@ function computeBlockers(
 
 /**
  * 取票行排他锁 + 越权校验 + 校验修订号；返回锁内最新行与快照。
- * 顺序很重要：先判定票级授权（FORBIDDEN 稳定优先于 CONFLICT），
- * 再比对修订号；修订号过期时返回的快照是 FOR UPDATE 锁内读取的最新值。
+ * 顺序很重要：先判定票级授权（FORBIDDEN 稳定优先于 CONFLICT，且越权时
+ * 不读取、更不下发任何快照），再比对修订号；修订号过期时返回的快照是
+ * FOR UPDATE 锁内读取的最新值（仅对已授权调用者）。
  */
 async function lockTicketForWrite(
   client: PoolClient,
@@ -169,20 +210,20 @@ async function lockTicketForWrite(
   const row = rows[0]
   if (!row) throw new BoardError('NOT_FOUND', '作业票不存在')
 
-  const snapshot = await readSnapshot(client, row)
-
-  // 票级授权：检修人员必须在该票授权名单内；送电负责人/协调员不受此限
+  // 票级授权：检修人员必须在该票授权名单内；送电负责人/协调员不受此限。
+  // 注意：越权拒绝不得附带快照/修订号/阻断项——失败响应只允许暴露"票存在"，
+  // 快照只在通过授权后的 CONFLICT/VALIDATION 中下发（用于合法页面重载）。
   if (actor.role === 'worker') {
     const { rows: auth } = await client.query(
       `SELECT 1 FROM authorizations WHERE ticket_id = $1 AND username = $2`,
       [ticketId, actor.username],
     )
     if (auth.length === 0) {
-      throw new BoardError('FORBIDDEN', '你未被授权操作该作业票', {
-        snapshot,
-      })
+      throw new BoardError('FORBIDDEN', '你未被授权操作该作业票')
     }
   }
+
+  const snapshot = await readSnapshot(client, row)
 
   if (typeof expectedRevision !== 'number' || !Number.isInteger(expectedRevision)) {
     throw new BoardError('VALIDATION', '必须携带页面所见修订号 revision', {
